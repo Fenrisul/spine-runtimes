@@ -39,6 +39,39 @@ using Spine;
 [ExecuteInEditMode, RequireComponent(typeof(MeshFilter), typeof(MeshRenderer))]
 public class SkeletonRenderer : MonoBehaviour {
 
+	public class PerPixelRendererObject {
+		public AtlasRegion region;
+		public int[] mostSignificantBones;
+
+		public PerPixelRendererObject (AtlasRegion region, SkinnedMeshAttachment skinnedMesh) {
+			this.region = region;
+			this.mostSignificantBones = CalculateMostSignificantBones(skinnedMesh);
+		}
+		public int[] CalculateMostSignificantBones (SkinnedMeshAttachment skinnedMesh) {
+			int[] mostSignificantBones = new int[skinnedMesh.uvs.Length];
+
+			for (int w = 0, v = 0, b = 0, n = skinnedMesh.bones.Length; v < n; w += 2) {
+				int nn = skinnedMesh.bones[v++] + v;
+
+				int boneIndex = -1;
+				float strongestWeight = 0;
+
+				for (; v < nn; v++, b += 3) {
+					float weight = skinnedMesh.weights[b + 2];
+					if (weight > strongestWeight) {
+						boneIndex = skinnedMesh.bones[v];
+						strongestWeight = weight;
+					}
+				}
+
+				mostSignificantBones[w / 2] = boneIndex;
+
+			}
+
+			return mostSignificantBones;
+		}
+	}
+
 	public delegate void SkeletonRendererDelegate (SkeletonRenderer skeletonRenderer);
 
 	public SkeletonRendererDelegate OnReset;
@@ -49,9 +82,12 @@ public class SkeletonRenderer : MonoBehaviour {
 	public SkeletonDataAsset skeletonDataAsset;
 	public String initialSkinName;
 	public bool calculateNormals, calculateTangents;
+	[Range(-0.002f, 0)]
 	public float zSpacing;
 	public bool renderMeshes = true, immutableTriangles;
 	public bool frontFacing;
+	public bool rotationTangents = false;
+
 	public bool logErrors = false;
 
 	[SpineSlot]
@@ -60,6 +96,7 @@ public class SkeletonRenderer : MonoBehaviour {
 	[HideInInspector]
 	public List<Slot> submeshSeparatorSlots = new List<Slot>();
 
+	private Vector4[] vertexExtraInfo; //ADDED
 	private MeshRenderer meshRenderer;
 	private MeshFilter meshFilter;
 	private Mesh mesh1, mesh2;
@@ -73,6 +110,7 @@ public class SkeletonRenderer : MonoBehaviour {
 	private readonly List<Material> submeshMaterials = new List<Material>();
 	private readonly List<Submesh> submeshes = new List<Submesh>();
 	private SkeletonUtilitySubmeshRenderer[] submeshRenderers;
+	private Vector4[] boneRotationTangents = new Vector4[0];
 
 	public virtual void Reset () {
 		if (meshFilter != null)
@@ -134,6 +172,51 @@ public class SkeletonRenderer : MonoBehaviour {
 
 		CollectSubmeshRenderers();
 
+
+		if (rotationTangents) {
+			boneRotationTangents = new Vector4[skeleton.bones.Count];
+			for (int i = 0; i < boneRotationTangents.Length; i++) {
+				boneRotationTangents[i] = Vector4.zero;
+			}
+
+			//override RendererObject for all attachments
+
+			List<Attachment> allAttachments = new List<Attachment>();
+			foreach (Skin s in skeletonData.Skins) {
+				for (int i = 0; i < skeletonData.Slots.Count; i++) {
+					s.FindAttachmentsForSlot(i, allAttachments);
+				}
+			}
+
+			foreach (Attachment a in allAttachments) {
+				if (a is SkinnedMeshAttachment) {
+					var skm = (SkinnedMeshAttachment)a;
+					if (skm.RendererObject is AtlasRegion) {
+						skm.RendererObject = new PerPixelRendererObject((AtlasRegion)skm.RendererObject, skm);
+					}
+				}
+			}
+		} else {
+			//revert RendererObject for all attachments
+
+			List<Attachment> allAttachments = new List<Attachment>();
+			foreach (Skin s in skeletonData.Skins) {
+				for (int i = 0; i < skeletonData.Slots.Count; i++) {
+					s.FindAttachmentsForSlot(i, allAttachments);
+				}
+			}
+
+			foreach (Attachment a in allAttachments) {
+				if (a is SkinnedMeshAttachment) {
+					var skm = (SkinnedMeshAttachment)a;
+					if (skm.RendererObject is PerPixelRendererObject) {
+						skm.RendererObject = ((PerPixelRendererObject)skm.RendererObject).region;
+					}
+				}
+			}
+		}
+
+
 		LateUpdate();
 
 		if (OnReset != null)
@@ -186,6 +269,23 @@ public class SkeletonRenderer : MonoBehaviour {
 		List<Slot> drawOrder = skeleton.DrawOrder;
 		int drawOrderCount = drawOrder.Count;
 		bool renderMeshes = this.renderMeshes;
+		bool rotationTangents = this.rotationTangents;
+
+		if (rotationTangents) {
+			for (int i = 0; i < skeleton.bones.Count; i++) {
+				var tangent = boneRotationTangents[i];
+				var bone = skeleton.bones[i];
+				//fancy tangent
+				bool flip = ((bone.WorldFlipX != bone.WorldFlipY) != (Mathf.Sign(bone.WorldScaleX) != Mathf.Sign(bone.WorldScaleY)));
+				float angle = bone.WorldRotation * Mathf.PI / 180f;
+				float scale = flip ? -bone.WorldScaleX : bone.WorldScaleX;
+
+				tangent.x = angle;
+				tangent.y = scale;
+				boneRotationTangents[i] = tangent;
+			}
+		}
+
 		for (int i = 0; i < drawOrderCount; i++) {
 			Slot slot = drawOrder[i];
 			Attachment attachment = slot.attachment;
@@ -215,10 +315,25 @@ public class SkeletonRenderer : MonoBehaviour {
 			}
 
 			// Populate submesh when material changes.
+			Material material;
 #if !SPINE_TK2D
-			Material material = (Material)((AtlasRegion)rendererObject).page.rendererObject;
+			if (!rotationTangents) {
+				material = (Material)((AtlasRegion)rendererObject).page.rendererObject;
+			} else {
+				if (attachment is SkinnedMeshAttachment)
+					material = (Material)((PerPixelRendererObject)rendererObject).region.page.rendererObject;
+				else
+					material = (Material)((AtlasRegion)rendererObject).page.rendererObject;
+			}
 #else
-			Material material = (rendererObject.GetType() == typeof(Material)) ? (Material)rendererObject : (Material)((AtlasRegion)rendererObject).page.rendererObject;
+			if (!rotationTangents) {
+				material = (rendererObject.GetType() == typeof(Material)) ? (Material)rendererObject : (Material)((AtlasRegion)rendererObject).page.rendererObject;
+			} else {
+				if (attachment is SkinnedMeshAttachment)
+					material = (Material)((PerPixelRendererObject)rendererObject).region.page.rendererObject;
+				else
+					material = (rendererObject.GetType() == typeof(Material)) ? (Material)rendererObject : (Material)((AtlasRegion)rendererObject).page.rendererObject;
+			}
 #endif
 
 			if ((lastMaterial != material && lastMaterial != null) || submeshSeparatorSlots.Contains(slot)) {
@@ -249,6 +364,7 @@ public class SkeletonRenderer : MonoBehaviour {
 			this.vertices = vertices = new Vector3[vertexCount];
 			this.colors = new Color32[vertexCount];
 			this.uvs = new Vector2[vertexCount];
+			this.vertexExtraInfo = new Vector4[vertexCount]; //ADDED
 			mesh1.Clear();
 			mesh2.Clear();
 		} else {
@@ -296,6 +412,20 @@ public class SkeletonRenderer : MonoBehaviour {
 				uvs[vertexIndex + 2] = new Vector2(regionUVs[RegionAttachment.X2], regionUVs[RegionAttachment.Y2]);
 				uvs[vertexIndex + 3] = new Vector2(regionUVs[RegionAttachment.X3], regionUVs[RegionAttachment.Y3]);
 
+				//ADDED...
+				if (rotationTangents) {
+					Vector4 tangent = boneRotationTangents[skeleton.Bones.IndexOf(slot.Bone)];
+					tangent.x = (slot.Bone.WorldRotation + regionAttachment.Rotation) * Mathf.PI / 180f;
+					if (transform.localScale.z < 0)
+						tangent.x += Mathf.PI / 2;
+
+					vertexExtraInfo[vertexIndex] = tangent;
+					vertexExtraInfo[vertexIndex + 1] = tangent;
+					vertexExtraInfo[vertexIndex + 2] = tangent;
+					vertexExtraInfo[vertexIndex + 3] = tangent;
+				}
+				//...ADDED
+
 				vertexIndex += 4;
 			} else {
 				if (!renderMeshes)
@@ -315,11 +445,29 @@ public class SkeletonRenderer : MonoBehaviour {
 
 					float[] meshUVs = meshAttachment.uvs;
 					float z = i * zSpacing;
-					for (int ii = 0; ii < meshVertexCount; ii += 2, vertexIndex++) {
-						vertices[vertexIndex] = new Vector3(tempVertices[ii], tempVertices[ii + 1], z);
-						colors[vertexIndex] = color;
-						uvs[vertexIndex] = new Vector2(meshUVs[ii], meshUVs[ii + 1]);
+
+
+
+					if (rotationTangents) {
+						var tangent = boneRotationTangents[skeleton.Bones.IndexOf(slot.Bone)];
+						for (int ii = 0; ii < meshVertexCount; ii += 2, vertexIndex++) {
+							vertices[vertexIndex] = new Vector3(tempVertices[ii], tempVertices[ii + 1], z);
+							colors[vertexIndex] = color;
+							uvs[vertexIndex] = new Vector2(meshUVs[ii], meshUVs[ii + 1]);
+
+							if (rotationTangents)
+								vertexExtraInfo[vertexIndex] = tangent;
+						}
+					} else {
+						for (int ii = 0; ii < meshVertexCount; ii += 2, vertexIndex++) {
+							vertices[vertexIndex] = new Vector3(tempVertices[ii], tempVertices[ii + 1], z);
+							colors[vertexIndex] = color;
+							uvs[vertexIndex] = new Vector2(meshUVs[ii], meshUVs[ii + 1]);
+						}
 					}
+
+
+
 				} else if (attachment is SkinnedMeshAttachment) {
 					SkinnedMeshAttachment meshAttachment = (SkinnedMeshAttachment)attachment;
 					int meshVertexCount = meshAttachment.uvs.Length;
@@ -335,11 +483,25 @@ public class SkeletonRenderer : MonoBehaviour {
 
 					float[] meshUVs = meshAttachment.uvs;
 					float z = i * zSpacing;
-					for (int ii = 0; ii < meshVertexCount; ii += 2, vertexIndex++) {
-						vertices[vertexIndex] = new Vector3(tempVertices[ii], tempVertices[ii + 1], z);
-						colors[vertexIndex] = color;
-						uvs[vertexIndex] = new Vector2(meshUVs[ii], meshUVs[ii + 1]);
+
+
+					if (rotationTangents) {
+						PerPixelRendererObject ppro = (PerPixelRendererObject)meshAttachment.RendererObject;
+
+						for (int ii = 0; ii < meshVertexCount; ii += 2, vertexIndex++) {
+							vertices[vertexIndex] = new Vector3(tempVertices[ii], tempVertices[ii + 1], z);
+							colors[vertexIndex] = color;
+							uvs[vertexIndex] = new Vector2(meshUVs[ii], meshUVs[ii + 1]);
+							vertexExtraInfo[vertexIndex] = boneRotationTangents[ppro.mostSignificantBones[ii]];
+						}
+					} else {
+						for (int ii = 0; ii < meshVertexCount; ii += 2, vertexIndex++) {
+							vertices[vertexIndex] = new Vector3(tempVertices[ii], tempVertices[ii + 1], z);
+							colors[vertexIndex] = color;
+							uvs[vertexIndex] = new Vector2(meshUVs[ii], meshUVs[ii + 1]);
+						}
 					}
+
 				}
 			}
 		}
@@ -351,6 +513,9 @@ public class SkeletonRenderer : MonoBehaviour {
 		mesh.vertices = vertices;
 		mesh.colors32 = colors;
 		mesh.uv = uvs;
+
+		if (rotationTangents)
+			mesh.tangents = vertexExtraInfo; //ADDED
 
 		int submeshCount = submeshMaterials.Count;
 		mesh.subMeshCount = submeshCount;
@@ -367,6 +532,7 @@ public class SkeletonRenderer : MonoBehaviour {
 			mesh1.normals = normals;
 			mesh2.normals = normals;
 
+			/*
 			if (calculateTangents) {
 				Vector4[] tangents = new Vector4[vertexCount];
 				Vector3 tangent = new Vector3(0, 0, 1);
@@ -375,6 +541,7 @@ public class SkeletonRenderer : MonoBehaviour {
 				mesh1.tangents = tangents;
 				mesh2.tangents = tangents;
 			}
+			*/
 		}
 
 		if (submeshRenderers.Length > 0) {

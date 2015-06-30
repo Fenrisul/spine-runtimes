@@ -38,7 +38,7 @@ using UnityEngine;
 public class SkeletonRendererInspector : Editor {
 	protected static bool advancedFoldout;
 
-	protected SerializedProperty skeletonDataAsset, initialSkinName, normals, tangents, meshes, immutableTriangles, submeshSeparators, front;
+	protected SerializedProperty skeletonDataAsset, initialSkinName, normals, tangents, meshes, immutableTriangles, submeshSeparators, front, rotationTangents, zSpacing;
 
 	private static MethodInfo EditorGUILayoutSortingLayerField;
 	protected SerializedObject rendererSerializedObject;
@@ -54,6 +54,8 @@ public class SkeletonRendererInspector : Editor {
 		immutableTriangles = serializedObject.FindProperty("immutableTriangles");
 		submeshSeparators = serializedObject.FindProperty("submeshSeparators");
 		front = serializedObject.FindProperty("frontFacing");
+		rotationTangents = serializedObject.FindProperty("rotationTangents");
+		zSpacing = serializedObject.FindProperty("zSpacing");
 
 		if(EditorGUILayoutSortingLayerField == null)
 			EditorGUILayoutSortingLayerField = typeof(EditorGUILayout).GetMethod("SortingLayerField", BindingFlags.Static | BindingFlags.NonPublic, null, new Type[] { typeof(GUIContent), typeof(SerializedProperty), typeof(GUIStyle) }, null);
@@ -135,9 +137,11 @@ public class SkeletonRendererInspector : Editor {
 				EditorGUILayout.PropertyField(immutableTriangles,
 					new GUIContent("Immutable Triangles", "Enable to optimize rendering for skeletons that never change attachment visbility"));
 				EditorGUILayout.PropertyField(normals);
-				EditorGUILayout.PropertyField(tangents);
+				EditorGUILayout.PropertyField(rotationTangents);
+				EditorGUILayout.PropertyField(zSpacing);
 				EditorGUILayout.PropertyField(front);
 				EditorGUILayout.PropertyField(submeshSeparators, true);
+				
 				EditorGUI.indentLevel--;
 			}
 		}
